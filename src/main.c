@@ -30,9 +30,15 @@
 #include "connection.h"
 #include "utils.h"
 #include "utils_list.h"
+#include "my_utils.h"
 
 #define IP_SIZE 20
 #define HOST_SIZE 256
+
+
+
+static user_map_t* nick_hash = NULL;
+static user_map_t* user_hash = NULL;
 
 /* Forward declaration of chirc_run */
 int chirc_run(chirc_ctx_t *ctx);

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "uthash.h"
+#include "log.h"
 
 
 
@@ -16,22 +17,22 @@ typedef struct user_map
     UT_hash_handle hh;
 }user_map_t;
 
-void add_user_map_node(user_map_t* user_hash, user_map_t* node)
+void add_user_map_node(user_map_t** user_hash, user_map_t* node)
 {
-    HASH_ADD_PTR(user_hash, name, node);
+    HASH_ADD_STR(*user_hash, name, node);
 }
 
 user_map_t* find_user_map_node(user_map_t* user_hash, char* name)
 {
     user_map_t* node = NULL;
-    HASH_FIND_PTR(user_hash, name, node);
+    HASH_FIND_STR(user_hash, name, node);
 
     return node;
 }
 
 user_map_t* fuzzy_find_user_map_node(user_map_t* user_hash, char* name)
 {
-    user_map_t* node = NULL, *tmp = NULL;
+    user_map_t* node = NULL, *tmp = NULL, *best_match_node = NULL;
     int len = strlen(name), max_cnt = -1;
 
     HASH_ITER(hh, user_hash, node, tmp) 
@@ -51,27 +52,36 @@ user_map_t* fuzzy_find_user_map_node(user_map_t* user_hash, char* name)
             if(cnt > max_cnt)
             {
                 max_cnt = cnt;
-                return node;
+                best_match_node = node;
             }
         }
     }
 
-    return NULL;
+    return best_match_node;
 }
 
-void del_user_map_node(user_map_t* user_hash, user_map_t* node)
+void del_user_map_node(user_map_t** user_hash, user_map_t* node)
 {
-    HASH_DEL(user_hash, node);
+    HASH_DEL(*user_hash, node);
     free(node);
 }
 
-void free_user_map_node(user_map_t* user_hash)
+void free_user_map_node(user_map_t** user_hash)
+{
+    user_map_t* node = NULL, *tmp = NULL;
+    HASH_ITER(hh, *user_hash, node, tmp) 
+    {
+        HASH_DEL(*user_hash, node);  
+    }
+}
+
+void print_user_map_node(user_map_t* user_hash)
 {
     user_map_t* node = NULL, *tmp = NULL;
     HASH_ITER(hh, user_hash, node, tmp) 
     {
-        HASH_DEL(user_hash, node);  
-    }
+        chilog(INFO, "node->name is %s", node->name);
+    }   
 }
 
 #endif

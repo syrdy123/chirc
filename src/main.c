@@ -189,11 +189,11 @@ void print_user_list_node(user_list_node* node)
     }
 }
 
-void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* nickname, char* username, int fd)
+void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* response_msg, char* nickname, int fd)
 {
-    char* response;
+    char* response_str;
     char buf[1024] = {0};
-    chirc_message_t* response_msg = (chirc_message_t*)malloc(sizeof(chirc_message_t));
+    chirc_message_t* msg = (chirc_message_t*)malloc(sizeof(chirc_message_t));
     chirc_connection_t* connection = (chirc_connection_t*)malloc(sizeof(chirc_connection_t));
     chirc_user_t* user = (chirc_user_t*)malloc(sizeof(chirc_user_t));
 
@@ -201,21 +201,23 @@ void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* nickname, char
     connection->peer.user = user;
     connection->type = CONN_TYPE_USER;
                                     
-    chirc_message_construct_reply(response_msg, ctx, connection, code);
+    chirc_message_construct_reply(msg, ctx, connection, code);
+    if(0 == strncmp(code, "443", 3))
+    {
+        chirc_message_add_parameter(msg, "*", false);
+    }
 
-    memset(buf, 0, sizeof buf);
-    sprintf(buf, "Welcome to the Internet Relay Network %s!%s@.*", nickname, username);
-    chirc_message_add_parameter(response_msg, buf, true);
-    chirc_message_to_string(response_msg, &response);
+    chirc_message_add_parameter(msg, response_msg, true);
+    chirc_message_to_string(msg, &response_str);
 
-    chilog(INFO, "response_msg is %s", response);
+    chilog(INFO, "response_msg is %s", response_str);
 
-    char* p = strstr(response, "\r\n");
-    int len = (p - response) + 2;
+    char* p = strstr(response_str, "\r\n");
+    int len = (p - response_str) + 2;
 
-    write(fd, response, len);
+    write(fd, response_str, len);
 
-    chirc_message_free(response_msg);
+    chirc_message_free(msg);
     free(user->nick);
     free(user);
     free(connection);
@@ -252,10 +254,6 @@ int chirc_run(chirc_ctx_t *ctx)
     fd_set rd_set, tmp_set;
     FD_ZERO(&rd_set);
     FD_ZERO(&tmp_set);
-    bool is_user = false;
-
-    user_list_node* nick_head = NULL, *user_head = NULL;
-    
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
@@ -363,52 +361,52 @@ int chirc_run(chirc_ctx_t *ctx)
 
                             if(0 == strncmp(msg->cmd, "NICK", 4) && 1 == msg->nparams)
                             {
-                                if(NULL == nick_head)
+                                user_map_t* nick_node = find_user_map_node(nick_hash, name);
+                                user_map_t* user_node = fuzzy_find_user_map_node(user_hash, name);
+                                if(nick_node == NULL)
                                 {
-                                    nick_head = (user_list_node*)malloc(sizeof(user_list_node));
-                                    memset(nick_head->user, 0, sizeof(nick_head->user));
-                                    memcpy(nick_head->user, name, strlen(name));
-                                    nick_head->next = NULL;
+                                    nick_node = (user_map_t*)malloc(sizeof(user_map_t));
+                                    memset(nick_node->name, 0, sizeof(nick_node->name));
+                                    memcpy(nick_node->name, name, strlen(name));
+                                    add_user_map_node(&nick_hash, nick_node);
+
+                                    if(user_node != NULL)
+                                    {
+                                        memset(buf, 0, sizeof(buf));
+                                        sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
+                                        my_construct_user_reply(ctx , "001", buf, name, i);
+                                    }
                                 }
                                 else
                                 {
-                                    user_list_node* node = (user_list_node*)malloc(sizeof(user_list_node));
-                                    memset(node->user, 0, sizeof(node->user));
-                                    memcpy(node->user, name, strlen(name));
-                                    node->next = NULL;
-                                    insert_user_list_node(nick_head, node);
+                                    if(NULL != user_node)
+                                    {
+                                        //nick is already in use
+                                        memset(buf, 0, sizeof(buf));
+                                        sprintf(buf, "Nickname is already in use.");
+                                        my_construct_user_reply(ctx , "433", buf, name, i);
+                                    }
                                 }
-                                
-                                user_list_node* node = find_user_list_node(user_head, name);
-                                if(NULL != node)
-                                {
-                                    my_construct_user_reply(ctx, "001", name, node->user, i);
-                                }
+
                             }
                             else if(0 == strncmp(msg->cmd, "USER", 4))
                             {
-                                if(NULL == user_head)
+                                user_map_t* user_node = find_user_map_node(user_hash, name);
+                                user_map_t* nick_node = fuzzy_find_user_map_node(nick_hash, name);
+                                if(user_node == NULL)
                                 {
-                                    user_head = (user_list_node*)malloc(sizeof(user_list_node));
-                                    memset(user_head->user, 0, sizeof(user_head->user));
-                                    memcpy(user_head->user, name, strlen(name));
-                                    user_head->next = NULL;
+                                    user_node = (user_map_t*)malloc(sizeof(user_map_t));
+                                    memset(user_node->name, 0, sizeof(user_node->name));
+                                    memcpy(user_node->name, name, strlen(name));
+                                    add_user_map_node(&user_hash, user_node);
+                                    
+                                    if(nick_node != NULL)
+                                    {
+                                        memset(buf, 0, sizeof(buf));
+                                        sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
+                                        my_construct_user_reply(ctx , "001", buf, nick_node->name, i);
+                                    }
                                 }
-                                else
-                                {
-                                    user_list_node* node = (user_list_node*)malloc(sizeof(user_list_node));
-                                    memset(node->user, 0, sizeof(node->user));
-                                    memcpy(node->user, name, strlen(name));
-                                    node->next = NULL;
-                                    insert_user_list_node(user_head, node);
-                                }
-
-                                user_list_node* node = find_user_list_node(nick_head, name);
-                                if(NULL != node)
-                                {
-                                    my_construct_user_reply(ctx, "001", node->user, name, i);
-                                }
-
                             }
 
                             chirc_message_free(msg);
@@ -433,7 +431,8 @@ _error:
         }
     }
 
-    free_user_list_node(nick_head);
-    free_user_list_node(user_head);
+    free_user_map_node(&nick_hash);
+    free_user_map_node(&user_hash);
+
     return ret;
 }

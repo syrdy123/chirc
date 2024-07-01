@@ -22,7 +22,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <netdb.h>
-
+#include <pthread.h>
 
 #include "chirc.h"
 #include "ctx.h"
@@ -31,18 +31,24 @@
 #include "utils.h"
 #include "utils_list.h"
 #include "my_utils.h"
+#include "common.h"
 
 #define IP_SIZE 20
 #define HOST_SIZE 256
 
 
+typedef struct thread_data
+{
+    int sockfd;
+    chirc_ctx_t *ctx;
 
-static user_map_t* nick_hash = NULL;
-static user_map_t* user_hash = NULL;
+} thread_data_t;
+
+connection_map_t *connection_hash = NULL;
+user_node_t *nick_head = NULL, *user_head = NULL;
 
 /* Forward declaration of chirc_run */
 int chirc_run(chirc_ctx_t *ctx);
-
 
 bool is_running = true;
 void sig_handler(int sig)
@@ -64,36 +70,36 @@ int main(int argc, char *argv[])
     while ((opt = getopt(argc, argv, "p:o:s:n:vqh")) != -1)
         switch (opt)
         {
-            case 'p':
-                port = sdsnew(optarg);
-                break;
-            case 'o':
-                passwd = sdsnew(optarg);
-                break;
-            case 's':
-                servername = sdsnew(optarg);
-                break;
-            case 'n':
-                if (access(optarg, R_OK) == -1)
-                {
-                    printf("ERROR: No such file: %s\n", optarg);
-                    exit(-1);
-                }
-                network_file = sdsnew(optarg);
-                break;
-            case 'v':
-                verbosity++;
-                break;
-            case 'q':
-                verbosity = -1;
-                break;
-            case 'h':
-                printf("Usage: chirc -o OPER_PASSWD [-p PORT] [-s SERVERNAME] [-n NETWORK_FILE] [(-q|-v|-vv)]\n");
-                exit(0);
-                break;
-            default:
-                fprintf(stderr, "ERROR: Unknown option -%c\n", opt);
+        case 'p':
+            port = sdsnew(optarg);
+            break;
+        case 'o':
+            passwd = sdsnew(optarg);
+            break;
+        case 's':
+            servername = sdsnew(optarg);
+            break;
+        case 'n':
+            if (access(optarg, R_OK) == -1)
+            {
+                printf("ERROR: No such file: %s\n", optarg);
                 exit(-1);
+            }
+            network_file = sdsnew(optarg);
+            break;
+        case 'v':
+            verbosity++;
+            break;
+        case 'q':
+            verbosity = -1;
+            break;
+        case 'h':
+            printf("Usage: chirc -o OPER_PASSWD [-p PORT] [-s SERVERNAME] [-n NETWORK_FILE] [(-q|-v|-vv)]\n");
+            exit(0);
+            break;
+        default:
+            fprintf(stderr, "ERROR: Unknown option -%c\n", opt);
+            exit(-1);
         }
 
     if (!passwd)
@@ -111,21 +117,21 @@ int main(int argc, char *argv[])
     /* Set logging level based on verbosity */
     switch (verbosity)
     {
-        case -1:
-            chirc_setloglevel(QUIET);
-            break;
-        case 0:
-            chirc_setloglevel(INFO);
-            break;
-        case 1:
-            chirc_setloglevel(DEBUG);
-            break;
-        case 2:
-            chirc_setloglevel(TRACE);
-            break;
-        default:
-            chirc_setloglevel(TRACE);
-            break;
+    case -1:
+        chirc_setloglevel(QUIET);
+        break;
+    case 0:
+        chirc_setloglevel(INFO);
+        break;
+    case 1:
+        chirc_setloglevel(DEBUG);
+        break;
+    case 2:
+        chirc_setloglevel(TRACE);
+        break;
+    default:
+        chirc_setloglevel(TRACE);
+        break;
     }
 
     /* Create server context */
@@ -150,13 +156,15 @@ int main(int argc, char *argv[])
         if (port)
         {
             ctx.network.this_server->port = port;
-        } else
+        }
+        else
         {
             ctx.network.this_server->port = sdsnew("6667");
         }
 
         serverlog(INFO, NULL, "%s: standalone mode (port %s)", ctx.version, ctx.network.this_server->port);
-    } else
+    }
+    else
     {
         /* If running in network mode, we load the network specification from the network file
          * specified with the -n parameter */
@@ -180,29 +188,20 @@ int main(int argc, char *argv[])
     return chirc_run(&ctx);
 }
 
-void print_user_list_node(user_list_node* node)
+void my_construct_user_reply(chirc_ctx_t *ctx, char *code, char *response_msg, char *nickname, int fd)
 {
-    while(NULL != node)
-    {
-        chilog(INFO, "node->user is %s", node->user);
-        node = node->next;
-    }
-}
-
-void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* response_msg, char* nickname, int fd)
-{
-    char* response_str;
+    char *response_str;
     char buf[1024] = {0};
-    chirc_message_t* msg = (chirc_message_t*)malloc(sizeof(chirc_message_t));
-    chirc_connection_t* connection = (chirc_connection_t*)malloc(sizeof(chirc_connection_t));
-    chirc_user_t* user = (chirc_user_t*)malloc(sizeof(chirc_user_t));
+    chirc_message_t *msg = (chirc_message_t *)malloc(sizeof(chirc_message_t));
+    chirc_connection_t *connection = (chirc_connection_t *)malloc(sizeof(chirc_connection_t));
+    chirc_user_t *user = (chirc_user_t *)malloc(sizeof(chirc_user_t));
 
     user->nick = strdup(nickname);
     connection->peer.user = user;
     connection->type = CONN_TYPE_USER;
-                                    
+
     chirc_message_construct_reply(msg, ctx, connection, code);
-    if(0 == strncmp(code, "443", 3))
+    if (0 == strncmp(code, "443", 3))
     {
         chirc_message_add_parameter(msg, "*", false);
     }
@@ -212,7 +211,7 @@ void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* response_msg, 
 
     chilog(INFO, "response_msg is %s", response_str);
 
-    char* p = strstr(response_str, "\r\n");
+    char *p = strstr(response_str, "\r\n");
     int len = (p - response_str) + 2;
 
     write(fd, response_str, len);
@@ -221,6 +220,188 @@ void my_construct_user_reply(chirc_ctx_t* ctx , char* code, char* response_msg, 
     free(user->nick);
     free(user);
     free(connection);
+}
+
+void *subthread_work(void *args)
+{
+    chirc_message_t *msg = NULL;
+    thread_data_t *data = (thread_data_t *)args;
+    int sockfd = data->sockfd;
+    chirc_ctx_t *ctx = data->ctx;
+
+    char full_command[1024] = {0}, buf[1024] = {0};
+    int ret = 0, pos = 0, total_read = 0;
+
+    while (1)
+    {
+        ret = read(sockfd, buf + pos, sizeof(buf) - total_read);
+        if (ret < 0)
+        {
+            chilog(INFO, "the other side has disconnected!");
+            close(sockfd);
+        }
+        else if (0 == ret)
+        {
+            chilog(INFO, "the other side has disconnected!");
+            close(sockfd);
+        }
+
+        pos += ret;
+        total_read += ret;
+        char *p = NULL;
+
+        while (NULL != (p = strstr(buf, "\r\n")))
+        {
+            int len = (p - buf) + 2;
+            memset(full_command, 0, sizeof(full_command));
+            memcpy(full_command, buf, len);
+            memset(buf, 0, len);
+            memmove(buf, buf + len, sizeof(buf) - len);
+            pos -= len;
+            total_read -= len;
+
+            chilog(INFO, "full_command: %s", full_command);
+            chilog(INFO, "buf: %s", buf);
+
+            msg = (chirc_message_t *)malloc(sizeof(chirc_message_t));
+            chirc_message_from_string(msg, full_command);
+            char *name = msg->params[0];
+
+            chilog(INFO, "name: %s", name);
+            
+
+            if (7 == strlen(msg->cmd) && 0 == strncmp(msg->cmd, "PRIVMSG", 7))
+            {
+                connection_map_t *node = find_connection_map_node(connection_hash, name);
+                if (NULL == node)
+                {
+                    memset(buf, 0, sizeof(buf));
+                    sprintf(buf, "You have not registered");
+                    my_construct_user_reply(ctx, ERR_NOTREGISTERED, buf, "*", sockfd);
+                }
+            }
+            else if (0 == strncmp(msg->cmd, "NICK", 4))
+            {
+                if (0 == msg->nparams)
+                {
+                    memset(buf, 0, sizeof(buf));
+                    sprintf(buf, "No nickname given");
+                    user_node_t *node = get_least_user_node(nick_head);
+                    my_construct_user_reply(ctx, ERR_NONICKNAMEGIVEN, buf, (node != NULL ? node->name: "*"), sockfd);
+                }
+                else if (1 == msg->nparams)
+                {
+                    user_node_t *nick_node = find_user_node(nick_head, name);
+                    
+                    if (nick_node == NULL)
+                    {
+                        nick_node = (user_node_t *)malloc(sizeof(user_node_t));
+                        memset(nick_node->name, 0, sizeof(nick_node->name));
+                        memcpy(nick_node->name, name, strlen(name));
+                        nick_node->next = NULL;
+                        if (nick_head == NULL)
+                        {
+                            nick_head = nick_node;
+                        }
+                        else
+                        {
+                            add_user_node(nick_head, nick_node);
+                        }
+
+                        user_node_t *user_node = fuzzy_find_user_node(user_head, name);
+
+                        if (user_node != NULL)
+                        {
+                            memset(buf, 0, sizeof(buf));
+                            sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
+                            connection_map_t *connection_node = (connection_map_t *)malloc(sizeof(connection_map_t));
+                            memset(connection_node->name, 0, sizeof(connection_node->name));
+                            memcpy(connection_node->name, nick_node->name, strlen(nick_node->name));
+                            connection_node->fd = sockfd;
+                            add_connection_map_node(&connection_hash, connection_node);
+                            my_construct_user_reply(ctx, RPL_WELCOME, buf, name, sockfd);
+                        }
+                    }
+                    else
+                    {
+                        connection_map_t *connection_node = find_connection_map_node(connection_hash, name);
+                        if(NULL != connection_node)
+                        {
+                            // nick is already in use
+                            memset(buf, 0, sizeof(buf));
+                            sprintf(buf, "Nickname is already in use.");
+                            my_construct_user_reply(ctx, "433", buf, name, sockfd);
+                        }
+                    }
+                }
+            }
+            else if (0 == strncmp(msg->cmd, "USER", 4))
+            {
+
+                user_node_t *user_node = find_user_node(user_head, name);
+                user_node_t *nick_node = fuzzy_find_user_node(nick_head, name);
+
+                if (msg->nparams < 4)
+                {
+                    memset(buf, 0, sizeof(buf));
+                    sprintf(buf, "Not enough parameters");
+                    my_construct_user_reply(ctx, ERR_NEEDMOREPARAMS, buf, (nick_node != NULL ? nick_node->name: "*"), sockfd);
+                    continue;
+                }
+
+                if (user_node == NULL)
+                {
+                    user_node = (user_node_t *)malloc(sizeof(user_node_t));
+                    memset(user_node->name, 0, sizeof(user_node->name));
+                    memcpy(user_node->name, name, strlen(name));
+                    user_node->next = NULL;
+                    if (NULL == user_head)
+                    {
+                        user_head = user_node;
+                    }
+                    else
+                    {
+                        add_user_node(user_head, user_node);
+                    }
+
+                    chilog(INFO, "msg->nparams = %d", msg->nparams);
+                    
+
+                    if (nick_node != NULL)
+                    {
+                        if (4 == msg->nparams)
+                        {
+                            memset(buf, 0, sizeof(buf));
+                            sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
+                            connection_map_t *connection_node = (connection_map_t *)malloc(sizeof(connection_map_t));
+                            memset(connection_node->name, 0, sizeof(connection_node->name));
+                            memcpy(connection_node->name, nick_node->name, strlen(nick_node->name));
+                            connection_node->fd = sockfd;
+                            add_connection_map_node(&connection_hash, connection_node);
+                            my_construct_user_reply(ctx, RPL_WELCOME, buf, nick_node->name, sockfd);
+                        }
+                    }
+                }
+            }
+
+            chirc_message_free(msg);
+
+            chilog(INFO, "nick_head====================================nick_head");
+            print_user_node(nick_head);
+            chilog(INFO, "=====================================================");
+            chilog(INFO, "user_head====================================user_head");
+            print_user_node(user_head);
+            chilog(INFO, "======================================================");
+            msg = NULL;
+        }
+    }
+
+    free_user_node(nick_head);
+    free_user_node(user_head);
+    free_connection_map_node(&connection_hash);
+    free(data);
+
+    return NULL;
 }
 
 /*!
@@ -244,195 +425,61 @@ int chirc_run(chirc_ctx_t *ctx)
 
     signal(SIGINT, sig_handler);
 
-    int ret = 0, listenfd, sockfd, maxfd;
+    int ret = 0, listenfd, sockfd;
     int total_read = 0, pos = 0;
     int port = atoi(ctx->network.this_server->port);
     struct sockaddr_in addr, client_addr, local_addr;
     char client_host[HOST_SIZE] = {0}, server_host[HOST_SIZE] = {0}, buf[600] = {0}, full_command[600] = {0};
     socklen_t client_addr_len = sizeof(client_addr);
-    chirc_message_t* msg = NULL, *response_msg = NULL;
-    fd_set rd_set, tmp_set;
-    FD_ZERO(&rd_set);
-    FD_ZERO(&tmp_set);
+    chirc_message_t *msg = NULL, *response_msg = NULL;
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
 
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(listenfd < 0)
+    if (listenfd < 0)
     {
         chilog(ERROR, "failed to create listenfd: %d!", listenfd);
         return listenfd;
     }
 
-    maxfd = listenfd;
-    FD_SET(listenfd, &rd_set);
-
-    ret = bind(listenfd, (struct sockaddr*)&addr, sizeof(addr));
-    if(ret < 0)
+    ret = bind(listenfd, (struct sockaddr *)&addr, sizeof(addr));
+    if (ret < 0)
     {
         chilog(ERROR, "failed to bind!");
         goto _error;
     }
 
     ret = listen(listenfd, 128);
-    if(ret < 0)
+    if (ret < 0)
     {
         chilog(ERROR, "failed to listen!");
         goto _error;
     }
 
-    while(is_running)
+    while (is_running)
     {
-        tmp_set = rd_set;
-        ret = select(maxfd + 1, &tmp_set, NULL, NULL, NULL);
-        if(ret < 0)
+        sockfd = accept(listenfd, NULL, NULL);
+        if(sockfd == -1)
         {
-            if(errno == EINTR)
-            {
-                continue;
-            }
-
-            chilog(ERROR, "failed to select!");
+            chilog(ERROR, "failed to accept!");
             break;
         }
 
-        for(int i = 0; i <= maxfd; ++i)
-        {
-            if(FD_ISSET(i, &tmp_set))
-            {
-                if(i == listenfd)
-                {
-                    int connfd = accept(i, (struct sockaddr*)&client_addr, &client_addr_len);
-                    if(connfd < 0)
-                    {
-                        chilog(ERROR, "failed to accept");
-                        continue;
-                    }
+        pthread_t tid;
+        thread_data_t *data = (thread_data_t *)malloc(sizeof(thread_data_t));
+        data->ctx = ctx;
+        data->sockfd = sockfd;
 
-                    if (getnameinfo((struct sockaddr *) &client_addr, client_addr_len, client_host, HOST_SIZE, NULL, 0, 0) != 0) 
-                    {
-                        chilog(ERROR, "failed to get client hostname!");
-                    }
+        pthread_create(&tid, NULL, subthread_work, data);
+        pthread_detach(tid);
 
-                    maxfd = max(connfd, maxfd);
-                    FD_SET(connfd, &rd_set);
-                }
-                else
-                {
-
-                    ret = read(i, buf + pos, sizeof(buf) - total_read);
-                    if(ret < 0)
-                    {
-                        chilog(ERROR, "failed to read!");
-                        FD_CLR(i, &rd_set);
-                        close(i);
-                    }
-                    else if(0 == ret)
-                    {
-                        chilog(INFO, "client has closed already!");
-                        FD_CLR(i, &rd_set);
-                        close(i);
-                    }
-                    else
-                    {
-                        pos += ret;
-                        total_read += ret;
-                        char* p = NULL;
-
-                        while(NULL != (p = strstr(buf, "\r\n")))
-                        {
-                            int len = (p - buf) + 2;
-                            memset(full_command, 0, sizeof(full_command));
-                            memcpy(full_command, buf, len);
-                            memset(buf, 0, len);
-                            memmove(buf, buf + len, sizeof(buf) - len);
-                            pos -= len;
-                            total_read -= len;
-
-                            chilog(INFO, "full_command is %s", full_command);
-
-                            msg = (chirc_message_t*)malloc(sizeof(chirc_message_t));
-                            chirc_message_from_string(msg, full_command);
-                            char* name = msg->params[0];
-
-                            chilog(INFO, "name is %s", name);
-
-                            if(0 == strncmp(msg->cmd, "NICK", 4) && 1 == msg->nparams)
-                            {
-                                user_map_t* nick_node = find_user_map_node(nick_hash, name);
-                                user_map_t* user_node = fuzzy_find_user_map_node(user_hash, name);
-                                if(nick_node == NULL)
-                                {
-                                    nick_node = (user_map_t*)malloc(sizeof(user_map_t));
-                                    memset(nick_node->name, 0, sizeof(nick_node->name));
-                                    memcpy(nick_node->name, name, strlen(name));
-                                    add_user_map_node(&nick_hash, nick_node);
-
-                                    if(user_node != NULL)
-                                    {
-                                        memset(buf, 0, sizeof(buf));
-                                        sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
-                                        my_construct_user_reply(ctx , "001", buf, name, i);
-                                    }
-                                }
-                                else
-                                {
-                                    if(NULL != user_node)
-                                    {
-                                        //nick is already in use
-                                        memset(buf, 0, sizeof(buf));
-                                        sprintf(buf, "Nickname is already in use.");
-                                        my_construct_user_reply(ctx , "433", buf, name, i);
-                                    }
-                                }
-
-                            }
-                            else if(0 == strncmp(msg->cmd, "USER", 4))
-                            {
-                                user_map_t* user_node = find_user_map_node(user_hash, name);
-                                user_map_t* nick_node = fuzzy_find_user_map_node(nick_hash, name);
-                                if(user_node == NULL)
-                                {
-                                    user_node = (user_map_t*)malloc(sizeof(user_map_t));
-                                    memset(user_node->name, 0, sizeof(user_node->name));
-                                    memcpy(user_node->name, name, strlen(name));
-                                    add_user_map_node(&user_hash, user_node);
-                                    
-                                    if(nick_node != NULL)
-                                    {
-                                        memset(buf, 0, sizeof(buf));
-                                        sprintf(buf, "Welcome to the Internet Relay Network %s!%s@%s", nick_node->name, user_node->name, ctx->network.this_server->servername);
-                                        my_construct_user_reply(ctx , "001", buf, nick_node->name, i);
-                                    }
-                                }
-                            }
-
-                            chirc_message_free(msg);
-                            msg = NULL;
-                        }
-                    }
-                }
-            }
-        }
     }
 
 _error:
     chilog(INFO, "program is exited!");
     close(listenfd);
-
-    for(int i = 0; i <= maxfd; ++i)
-    {
-        if(FD_ISSET(i, &rd_set))
-        {
-            FD_CLR(i, &rd_set);
-            close(i);
-        }
-    }
-
-    free_user_map_node(&nick_hash);
-    free_user_map_node(&user_hash);
 
     return ret;
 }

@@ -128,5 +128,4 @@ int chirc_message_construct_reply(chirc_message_t *msg, chirc_ctx_t *ctx, chirc_
  */
 void chirc_message_free(chirc_message_t *msg);
 
-
 #endif /* MESSAGE_H_ */

@@ -9,6 +9,7 @@
 #include "connection.h"
 
 /* See message.h */
+
 int chirc_message_from_string(chirc_message_t *msg, char *s)
 {
     char *params[15], *pch, *msgstr, *i, *saveptr;
@@ -144,11 +145,14 @@ int chirc_message_add_parameter(chirc_message_t *msg, char *param, bool longlast
 /* See message.h */
 int chirc_message_construct_reply(chirc_message_t *msg, chirc_ctx_t *ctx, chirc_connection_t *conn, char *code)
 {
-    assert(strlen(code) == 3);
+    //assert(strlen(code) == 3);
 
     chirc_message_construct(msg, ctx->network.this_server->servername, code);
-
-    if (conn->type == CONN_TYPE_UNKNOWN)
+    if(conn->type == CONN_TYPE_QUIT)
+    {
+        
+    }
+    else if (conn->type == CONN_TYPE_UNKNOWN) 
     {
         chirc_message_add_parameter(msg, "*", false);
     }

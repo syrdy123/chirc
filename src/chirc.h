@@ -223,7 +223,8 @@ typedef enum
 {
     CONN_TYPE_UNKNOWN = 0,
     CONN_TYPE_USER = 1,
-    CONN_TYPE_SERVER = 2
+    CONN_TYPE_SERVER = 2,
+    CONN_TYPE_QUIT = 3
 } conn_type_t;
 
 

@@ -7,6 +7,7 @@
 
 #include "uthash.h"
 #include "log.h"
+#include "chirc.h"
 
 pthread_mutex_t user_node_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t connection_node_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -15,6 +16,7 @@ pthread_mutex_t sockfd_nick_node_mutex = PTHREAD_MUTEX_INITIALIZER;
 typedef struct user_node
 {
     char name[128];
+    chirc_message_t *msg;
     struct user_node *next;
 } user_node_t;
 
@@ -22,6 +24,7 @@ typedef struct connection_map
 {
     char name[128];
     int fd;
+    chirc_message_t *msg;
 
     UT_hash_handle hh;
 }connection_map_t;

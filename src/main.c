@@ -227,6 +227,35 @@ void trim_space(const char *src, int len, char *out)
     out[idx - 2] = '\r';
 }
 
+void response_PING(chirc_ctx_t *ctx, char *nickname, int sockfd)
+{
+    char *response_str;
+    char buf[1024] = {0};
+    chirc_message_t *msg = (chirc_message_t *)malloc(sizeof(chirc_message_t));
+    chirc_connection_t *connection = (chirc_connection_t *)malloc(sizeof(chirc_connection_t));
+    chirc_user_t *user = (chirc_user_t *)malloc(sizeof(chirc_user_t));
+
+    user->nick = strdup(nickname);
+    connection->peer.user = user;
+    connection->type = CONN_TYPE_QUIT;
+
+    chirc_message_construct_reply(msg, ctx, connection, "PONG");
+    chirc_message_add_parameter(msg, "xixi", false);
+
+    chirc_message_to_string(msg, &response_str);
+
+    chilog(INFO, "response_msg is %s", response_str);
+
+    char *p = strstr(response_str, "\r\n");
+    int len = (p - response_str) + 2;
+    write(sockfd, response_str, len);
+
+    chirc_message_free(msg);
+    free(user->nick);
+    free(user);
+    free(connection);
+}
+
 void response_WHOIS(chirc_ctx_t *ctx, char *nickname, int sockfd)
 {
     connection_map_t *connection_node = find_connection_map_node(connection_hash, nickname);
@@ -756,8 +785,15 @@ void *subthread_work(void *args)
             char *name = msg->params[0];
 
             chilog(INFO, "name: %s", name);
+            if(4 == strlen(msg->cmd) && 0 == strncmp(msg->cmd, "PING", 4))
+            {
+                response_PING(ctx, "", sockfd);
+            }
+            else if(4 == strlen(msg->cmd) && 0 == strncmp(msg->cmd, "PONG", 4))
+            {
 
-            if (4 == strlen(msg->cmd) && 0 == strncmp(msg->cmd, "QUIT", 4))
+            }
+            else if (4 == strlen(msg->cmd) && 0 == strncmp(msg->cmd, "QUIT", 4))
             {
                 memset(buf, 0, sizeof buf);
                 user_node_t *nick_node = get_least_user_node(nick_head);

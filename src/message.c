@@ -147,12 +147,15 @@ int chirc_message_construct_reply(chirc_message_t *msg, chirc_ctx_t *ctx, chirc_
 {
     //assert(strlen(code) == 3);
 
-    chirc_message_construct(msg, ctx->network.this_server->servername, code);
+    
     if(conn->type == CONN_TYPE_QUIT)
     {
-        
+        chirc_message_construct(msg, NULL, code);
+        return 0;
     }
-    else if (conn->type == CONN_TYPE_UNKNOWN) 
+
+    chirc_message_construct(msg, ctx->network.this_server->servername, code);
+    if (conn->type == CONN_TYPE_UNKNOWN) 
     {
         chirc_message_add_parameter(msg, "*", false);
     }
